@@ -8,22 +8,39 @@ const startConsumer = async () => {
 
     await consumer.run({
       eachMessage: async ({ topic, partition, message }) => {
+        const startTime = Date.now();
         try {
           const data = JSON.parse(message.value.toString());
-          console.log(`Received data from ${topic}:`, data);
+          const workerId = process.pid;
+          
+          console.log(`\n[Worker PID: ${workerId}] 📥 Received OCR task from ${topic}`);
+          console.log(`[Worker PID: ${workerId}] Data ID: ${data.dataId}`);
+          console.log(`[Worker PID: ${workerId}] User: ${data.userEmail}`);
+          console.log(`[Worker PID: ${workerId}] Image: ${data.imagePath}`);
 
           // Process the image with OCR
+          console.log(`[Worker PID: ${workerId}] 🔄 Starting OCR processing...`);
           const result = await processImage(data);
+          const processingTime = Date.now() - startTime;
 
           if (result.success) {
+            console.log(`[Worker PID: ${workerId}] ✓ OCR completed in ${processingTime}ms`);
+            console.log(`[Worker PID: ${workerId}] Confidence: ${result.confidence.toFixed(2)}%`);
+            
             // Send extracted data to ICU service
             await publishMessage('ocr-complete-topic', {
               ...data,
               extractedData: result.data,
               ocrConfidence: result.confidence,
-              processedAt: new Date().toISOString()
+              processedAt: new Date().toISOString(),
+              processingTime: processingTime,
+              workerPid: workerId
             });
+            
+            console.log(`[Worker PID: ${workerId}] 📤 Results sent to ICU service\n`);
           } else {
+            console.log(`[Worker PID: ${workerId}] ✗ OCR failed: ${result.error}`);
+            
             // Send error to notification service
             await publishMessage('error-topic', {
               service: 'ocr-service',
@@ -33,12 +50,15 @@ const startConsumer = async () => {
               error: result.error,
               message: 'OCR processing failed',
               timestamp: new Date().toISOString(),
-              correlationId: data.correlationId
+              correlationId: data.correlationId,
+              workerPid: workerId
             });
           }
 
         } catch (error) {
-          console.error('Error processing message:', error);
+          const processingTime = Date.now() - startTime;
+          const workerId = process.pid;
+          console.error(`[Worker PID: ${workerId}] ✗ Error processing message (${processingTime}ms):`, error);
           
           // Send error notification
           try {

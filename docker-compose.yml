@@ -115,7 +115,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # OCR Service
+  # OCR Service (Master-Slave Architecture with 3 Workers)
   ocr-service:
     build:
       context: ./ocr-service
@@ -127,6 +127,7 @@ services:
       - PORT=3002
       - KAFKA_BROKER=kafka:9092
       - NODE_ENV=production
+      - OCR_WORKERS=3
     volumes:
       - user-uploads:/app/uploads:ro
     depends_on:

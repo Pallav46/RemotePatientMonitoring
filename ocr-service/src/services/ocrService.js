@@ -5,22 +5,22 @@ const path = require('path');
 
 /**
  * Preprocess image for better OCR accuracy
+ * Returns a buffer instead of saving to disk (avoids read-only filesystem issues)
  */
 const preprocessImage = async (imagePath) => {
   try {
-    const outputPath = imagePath.replace(path.extname(imagePath), '_processed.png');
-    
-    await sharp(imagePath)
+    const buffer = await sharp(imagePath)
       .resize(2000, null, { withoutEnlargement: true }) // Resize for better OCR
       .greyscale() // Convert to grayscale
       .normalize() // Normalize contrast
       .sharpen() // Enhance sharpness
-      .toFile(outputPath);
+      .png() // Convert to PNG format
+      .toBuffer(); // Return buffer instead of saving to file
     
-    return outputPath;
+    return buffer;
   } catch (error) {
     console.error('Image preprocessing error:', error);
-    return imagePath; // Return original if preprocessing fails
+    return null; // Return null if preprocessing fails
   }
 };
 
@@ -29,10 +29,14 @@ const preprocessImage = async (imagePath) => {
  */
 const extractTextFromImage = async (imagePath) => {
   try {
-    const processedImagePath = await preprocessImage(imagePath);
+    // Try to preprocess image in memory
+    const processedBuffer = await preprocessImage(imagePath);
+    
+    // Use processed buffer if available, otherwise use original image path
+    const imageInput = processedBuffer || imagePath;
     
     const { data } = await Tesseract.recognize(
-      processedImagePath,
+      imageInput,
       'eng',
       {
         logger: (m) => {
@@ -42,15 +46,6 @@ const extractTextFromImage = async (imagePath) => {
         }
       }
     );
-
-    // Clean up processed image if it was created
-    if (processedImagePath !== imagePath) {
-      try {
-        await fs.unlink(processedImagePath);
-      } catch (err) {
-        console.error('Error deleting processed image:', err);
-      }
-    }
 
     return {
       text: data.text,
@@ -66,6 +61,7 @@ const extractTextFromImage = async (imagePath) => {
 
 /**
  * Parse patient monitoring data from extracted text
+ * Enhanced with flexible pattern matching for various OCR outputs
  */
 const parsePatientData = (extractedText) => {
   const data = {
@@ -77,36 +73,116 @@ const parsePatientData = (extractedText) => {
     rawText: extractedText
   };
 
-  // Extract heart rate (e.g., "HR: 72", "Heart Rate: 72 bpm")
-  const hrMatch = extractedText.match(/(?:HR|Heart\s*Rate)[:\s]*(\d+)/i);
-  if (hrMatch) {
+  // Clean the text: remove special characters but keep numbers, slashes, dots, colons, and spaces
+  const cleanText = extractedText.replace(/[£€$@#&*()[\]{}|\\<>]/g, ' ');
+
+  // Extract heart rate with multiple patterns
+  // Patterns: "HR: 72", "Heart Rate: 72", "72 bpm", standalone numbers in range 40-220
+  let hrMatch = cleanText.match(/(?:HR|Heart\s*Rate)[:\s]*(\d{2,3})/i);
+  if (!hrMatch) {
+    // Look for numbers followed by "bpm"
+    hrMatch = cleanText.match(/(\d{2,3})\s*bpm/i);
+  }
+  if (!hrMatch) {
+    // Look for standalone numbers in heart rate range (40-220)
+    const numbers = cleanText.match(/\b(\d{2,3})\b/g);
+    if (numbers) {
+      for (const num of numbers) {
+        const val = parseInt(num);
+        if (val >= 40 && val <= 220 && !data.heartRate) {
+          data.heartRate = val;
+          break;
+        }
+      }
+    }
+  } else {
     data.heartRate = parseInt(hrMatch[1]);
   }
 
-  // Extract blood pressure (e.g., "BP: 120/80", "Blood Pressure: 120/80")
-  const bpMatch = extractedText.match(/(?:BP|Blood\s*Pressure)[:\s]*(\d+)\/(\d+)/i);
+  // Extract blood pressure with flexible pattern matching
+  // Patterns: "BP: 120/80", "120/80", with or without special chars
+  let bpMatch = cleanText.match(/(?:BP|Blood\s*Pressure)?[:\s]*(\d{2,3})\s*[\/\\|]\s*(\d{2,3})/i);
   if (bpMatch) {
-    data.bloodPressure = {
-      systolic: parseInt(bpMatch[1]),
-      diastolic: parseInt(bpMatch[2])
-    };
+    const systolic = parseInt(bpMatch[1]);
+    const diastolic = parseInt(bpMatch[2]);
+    // Validate blood pressure ranges
+    if (systolic >= 60 && systolic <= 250 && diastolic >= 40 && diastolic <= 150) {
+      data.bloodPressure = {
+        systolic: systolic,
+        diastolic: diastolic
+      };
+    }
   }
 
-  // Extract oxygen saturation (e.g., "SpO2: 98%", "O2: 98")
-  const o2Match = extractedText.match(/(?:SpO2|O2|Oxygen)[:\s]*(\d+)/i);
-  if (o2Match) {
-    data.oxygenSaturation = parseInt(o2Match[1]);
+  // Extract oxygen saturation with multiple patterns
+  // Patterns: "SpO2: 98%", "O2: 98", "98%", numbers in range 70-100
+  let o2Match = cleanText.match(/(?:SpO2|O2|Oxygen|Sat)[:\s]*(\d{2,3})%?/i);
+  if (!o2Match) {
+    // Look for percentage signs
+    o2Match = cleanText.match(/(\d{2,3})%/);
+  }
+  if (!o2Match) {
+    // Look for numbers in oxygen saturation range (70-100)
+    const numbers = cleanText.match(/\b(\d{2,3})\b/g);
+    if (numbers) {
+      for (const num of numbers) {
+        const val = parseInt(num);
+        if (val >= 70 && val <= 100 && !data.oxygenSaturation && val !== data.heartRate) {
+          data.oxygenSaturation = val;
+          break;
+        }
+      }
+    }
+  } else {
+    const val = parseInt(o2Match[1]);
+    if (val >= 70 && val <= 100) {
+      data.oxygenSaturation = val;
+    }
   }
 
-  // Extract temperature (e.g., "Temp: 98.6", "Temperature: 37.2")
-  const tempMatch = extractedText.match(/(?:Temp|Temperature)[:\s]*([\d.]+)/i);
-  if (tempMatch) {
+  // Extract temperature with multiple patterns
+  // Patterns: "Temp: 98.6", "36.5°C", "98.6°F", decimal numbers in range 32-45
+  let tempMatch = cleanText.match(/(?:Temp|Temperature)[:\s]*([\d.]+)[\s°]?[CF]?/i);
+  if (!tempMatch) {
+    // Look for decimal numbers with degree symbol
+    tempMatch = cleanText.match(/([\d.]+)\s*[°º][CF]?/);
+  }
+  if (!tempMatch) {
+    // Look for decimal numbers in temperature range
+    const decimals = cleanText.match(/\b(\d{2,3}\.\d{1,2})\b/g);
+    if (decimals) {
+      for (const num of decimals) {
+        const val = parseFloat(num);
+        // Check for both Celsius (32-45) and Fahrenheit (90-110) ranges
+        if ((val >= 32 && val <= 45) || (val >= 90 && val <= 110)) {
+          data.temperature = val;
+          break;
+        }
+      }
+    }
+  } else {
     data.temperature = parseFloat(tempMatch[1]);
   }
 
-  // Extract respiratory rate (e.g., "RR: 16", "Resp: 16")
-  const rrMatch = extractedText.match(/(?:RR|Resp|Respiratory\s*Rate)[:\s]*(\d+)/i);
-  if (rrMatch) {
+  // Extract respiratory rate with multiple patterns
+  // Patterns: "RR: 16", "Resp: 16", numbers in range 8-60
+  let rrMatch = cleanText.match(/(?:RR|Resp|Respiratory\s*Rate)[:\s]*(\d{1,2})/i);
+  if (!rrMatch) {
+    // Look for small numbers in respiratory rate range (8-60)
+    const numbers = cleanText.match(/\b(\d{1,2})\b/g);
+    if (numbers) {
+      for (const num of numbers) {
+        const val = parseInt(num);
+        if (val >= 8 && val <= 60 && 
+            val !== data.heartRate && 
+            val !== data.oxygenSaturation && 
+            !data.respiratoryRate) {
+          data.respiratoryRate = val;
+          break;
+        }
+      }
+    }
+  } else {
     data.respiratoryRate = parseInt(rrMatch[1]);
   }
 
@@ -118,7 +194,7 @@ const parsePatientData = (extractedText) => {
  */
 const processImage = async (imageData) => {
   try {
-    console.log(`Processing image: ${imageData.imageId}`);
+    console.log(`Processing image: ${imageData.imagePath}`);
 
     // Check if image file exists
     const fileExists = await fs.access(imageData.imagePath)
@@ -129,7 +205,7 @@ const processImage = async (imageData) => {
       return {
         success: false,
         error: 'Image file not found',
-        imageId: imageData.imageId
+        imagePath: imageData.imagePath
       };
     }
 
@@ -139,7 +215,7 @@ const processImage = async (imageData) => {
     // Parse patient data from extracted text
     const patientData = parsePatientData(ocrResult.text);
 
-    console.log(`OCR completed for image: ${imageData.imageId}`);
+    console.log(`OCR completed for image: ${imageData.imagePath}`);
     console.log(`Confidence: ${ocrResult.confidence}%, Words: ${ocrResult.words}`);
 
     return {
@@ -157,7 +233,7 @@ const processImage = async (imageData) => {
     return {
       success: false,
       error: error.message,
-      imageId: imageData.imageId
+      imagePath: imageData.imagePath
     };
   }
 };

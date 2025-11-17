@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive ICU Monitor</title>
+    <!-- Importing Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Importing Google Font 'Orbitron' for a digital look -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+    <!-- Importing Tone.js for audio generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+
+    <style>
+        /* Custom styles */
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            /* Using Orbitron for the digital monitor feel */
+            font-family: 'Orbitron', 'Courier New', monospace;
+            cursor: default;
+            user-select: none;
+        }
+
+        /* Subtle grid background for the monitor */
+        .monitor-bg {
+            background-color: #0c0f1a; /* Dark blue-black */
+            background-image:
+                linear-gradient(rgba(0, 128, 0, 0.1) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 128, 0, 0.1) 1px, transparent 1px);
+            background-size: 25px 25px;
+        }
+        
+        /* Base styles for a vital sign box */
+        .vital-box {
+            border: 2px solid #2a3a59;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            background-color: rgba(0, 0, 0, 0.3);
+            transition: background-color 0.5s ease;
+        }
+
+        /* Flashing animation for critical state */
+        @keyframes flash-red {
+            0%, 100% { background-color: rgba(0, 0, 0, 0.3); }
+            50% { background-color: rgba(220, 38, 38, 0.3); }
+        }
+
+        /* State-based styling */
+        [data-state="critical"].vital-box {
+            border-color: #dc2626; /* red-600 */
+            animation: flash-red 0.8s infinite;
+        }
+        [data-state="warning"].vital-box {
+            border-color: #facc15; /* yellow-400 */
+        }
+        [data-state="normal"].vital-box {
+            border-color: #10b981; /* green-500 */
+        }
+        
+        .vital-label {
+            font-size: 1.25rem; /* text-xl */
+        }
+        
+        .vital-value {
+            font-weight: 700;
+            line-height: 1;
+            font-size: 5rem; /* Responsive font size */
+        }
+        
+        .vital-unit {
+            font-size: 1.5rem; /* text-2xl */
+            margin-left: 0.5rem;
+            font-weight: 400;
+        }
+
+        /* Specific style for NIBP (Blood Pressure) */
+        .nibp-value {
+            font-size: 4rem;
+        }
+        .nibp-separator {
+            font-size: 4rem;
+            margin: 0 0.25rem;
+        }
+        
+        /* Ensure canvas stretches */
+        .waveform-canvas {
+            width: 100%;
+            height: 100px;
+            margin-top: 1rem;
+        }
+        
+        /* Responsive font sizes */
+        @media (min-width: 768px) {
+            .vital-value { font-size: 6rem; }
+            .nibp-value { font-size: 5rem; }
+            .nibp-separator { font-size: 5rem; }
+        }
+        @media (min-width: 1024px) {
+            .vital-value { font-size: 7.5rem; }
+            .nibp-value { font-size: 6.5rem; }
+            .nibp-separator { font-size: 6.5rem; }
+        }
+
+        /* Blinking text for the main alarm */
+        @keyframes blink-alarm {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.2; }
+        }
+        #main-alarm-text {
+            animation: blink-alarm 0.8s infinite;
+        }
+    </style>
+</head>
+<body class="monitor-bg text-white">
+
+    <div id="monitor-screen" class="w-screen h-screen p-2 md:p-4 grid grid-cols-2 grid-rows-3 md:grid-rows-2 gap-2 md:gap-4">
+
+        <!-- Main Alarm Banner -->
+        <div id="main-alarm" data-state="critical" class="vital-box col-span-2 row-span-1 md:row-auto flex items-center justify-center py-2 md:hidden">
+            <span id="main-alarm-text" class="text-red-500 text-3xl md:text-5xl font-bold">!! CRITICAL !!</span>
+        </div>
+
+        <!-- Heart Rate (HR) -->
+        <div id="hr-box" data-state="critical" class="vital-box col-span-2 md:col-span-1 md:row-span-1">
+            <div class="flex justify-between items-baseline">
+                <span class="vital-label text-red-500">HR</span>
+                <span class="text-lg">bpm</span>
+            </div>
+            <div class="text-center my-4">
+                <span id="hr-value" class="vital-value text-red-500">185</span>
+            </div>
+            <canvas id="hr-canvas" class="waveform-canvas"></canvas>
+        </div>
+
+        <!-- SpO2 (Oxygen) -->
+        <div id="spo2-box" data-state="critical" class="vital-box col-span-1 md:col-span-1 md:row-span-1">
+            <div class="flex justify-between items-baseline">
+                <span class="vital-label text-red-500">SpO2</span>
+                <span class="text-lg">%</span>
+            </div>
+            <div class="text-center my-4">
+                <span id="spo2-value" class="vital-value text-red-500">85</span>
+            </div>
+            <canvas id="spo2-canvas" class="waveform-canvas"></canvas>
+        </div>
+
+        <!-- Blood Pressure (NIBP) -->
+        <div id="nibp-box" data-state="critical" class="vital-box col-span-1 md:col-span-1 md:row-span-1">
+            <div class="flex justify-between items-baseline">
+                <span class="vital-label text-red-500">NIBP</span>
+                <span class="text-lg">mmHg</span>
+            </div>
+            <div class="text-center my-auto">
+                <span id="nibp-sys-value" class="nibp-value text-red-500">200</span>
+                <span class="nibp-separator text-gray-500">/</span>
+                <span id="nibp-dias-value" class="nibp-value text-red-500">120</span>
+            </div>
+            <div class="h-[100px] mt-4 flex items-center justify-center text-gray-400">(Last: 12:50 PM)</div>
+        </div>
+        
+        <!-- Combined Box for RESP and TEMP -->
+        <div class="col-span-2 md:col-span-1 md:row-span-1 grid grid-rows-2 gap-2 md:gap-4">
+            <!-- Respiratory Rate (RESP) -->
+            <div id="resp-box" data-state="warning" class="vital-box">
+                <div class="flex justify-between items-baseline">
+                    <span class="vital-label text-yellow-400">RESP</span>
+                    <span class="text-lg">/min</span>
+                </div>
+                <div class="text-center my-auto">
+                    <span id="resp-value" class="vital-value text-yellow-400" style="font-size: 5rem;">35</span>
+                </div>
+            </div>
+            <!-- Temperature (TEMP) -->
+            <div id="temp-box" data-state="critical" class="vital-box">
+                <div class="flex justify-between items-baseline">
+                    <span class="vital-label text-red-500">TEMP</span>
+                    <span class="text-lg">°C</span>
+                </div>
+                <div class="text-center my-auto">
+                    <span id="temp-value" class="vital-value text-red-500" style="font-size: 5rem;">41.5</span>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Control Button -->
+    <div class="fixed bottom-0 left-0 w-full flex justify-center p-4 bg-gray-900/50 backdrop-blur-sm">
+        <button id="stabilize-btn" class="text-2xl font-bold bg-blue-600 hover:bg-blue-700 text-white py-4 px-8 rounded-lg shadow-lg transition-all active:scale-95">
+            Click to Stabilize Patient
+        </button>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- DOM Elements ---
+            const elements = {
+                hr: { box: document.getElementById('hr-box'), value: document.getElementById('hr-value'), canvas: document.getElementById('hr-canvas'), label: document.querySelector('#hr-box .vital-label') },
+                spo2: { box: document.getElementById('spo2-box'), value: document.getElementById('spo2-value'), canvas: document.getElementById('spo2-canvas'), label: document.querySelector('#spo2-box .vital-label') },
+                nibp: { box: document.getElementById('nibp-box'), sys: document.getElementById('nibp-sys-value'), dias: document.getElementById('nibp-dias-value'), label: document.querySelector('#nibp-box .vital-label') },
+                resp: { box: document.getElementById('resp-box'), value: document.getElementById('resp-value'), label: document.querySelector('#resp-box .vital-label') },
+                temp: { box: document.getElementById('temp-box'), value: document.getElementById('temp-value'), label: document.querySelector('#temp-box .vital-label') },
+                mainAlarm: document.getElementById('main-alarm'),
+                mainAlarmText: document.getElementById('main-alarm-text'),
+                stabilizeBtn: document.getElementById('stabilize-btn')
+            };
+
+            // --- Vitals Data (Critical vs Normal) ---
+            const vitalsConfig = {
+                critical: {
+                    hr: { value: 185, state: 'critical', color: '#ef4444', speed: 0.4 },
+                    spo2: { value: 85, state: 'critical', color: '#ef4444', speed: 1.0 },
+                    nibp: { sys: 200, dias: 120, state: 'critical', color: '#ef4444' },
+                    resp: { value: 35, state: 'warning', color: '#facc15' },
+                    temp: { value: 41.5, state: 'critical', color: '#ef4444' }
+                },
+                normal: {
+                    hr: { value: 72, state: 'normal', color: '#10b981', speed: 1.0 },
+                    spo2: { value: 98, state: 'normal', color: '#3b82f6', speed: 1.0 },
+                    nibp: { sys: 120, dias: 80, state: 'normal', color: '#10b981' },
+                    resp: { value: 16, state: 'normal', color: '#f59e0b' },
+                    temp: { value: 36.8, state: 'normal', color: '#f9fafb' }
+                }
+            };
+            
+            let isCritical = true;
+            let audioStarted = false;
+
+            // --- Audio Synthesizers (Tone.js) ---
+            const alarmSynth = new Tone.Synth().toDestination();
+            const normalSynth = new Tone.Synth().toDestination();
+            
+            // Fast, high-pitched alarm beep
+            const alarmLoop = new Tone.Loop(time => {
+                alarmSynth.triggerAttackRelease("C6", "16n", time);
+            }, "0.4s"); // Matches critical HR speed
+            
+            // Slower, calmer normal beep
+            const normalLoop = new Tone.Loop(time => {
+                normalSynth.triggerAttackRelease("A4", "16n", time);
+            }, "0.83s"); // Matches normal HR speed (approx 72 bpm)
+
+            Tone.Transport.start();
+
+            // --- Waveform Drawing ---
+            const contexts = {
+                hr: elements.hr.canvas.getContext('2d'),
+                spo2: elements.spo2.canvas.getContext('2d')
+            };
+
+            // Initialize canvas dimensions
+            function resizeCanvas(canvas) {
+                const box = canvas.parentElement;
+                canvas.width = box.clientWidth;
+                canvas.height = 100; // Fixed height
+            }
+            resizeCanvas(elements.hr.canvas);
+            resizeCanvas(elements.spo2.canvas);
+            window.addEventListener('resize', () => {
+                resizeCanvas(elements.hr.canvas);
+                resizeCanvas(elements.spo2.canvas);
+            });
+
+            // Waveform data
+            const waveData = {
+                hr: new Array(100).fill(50), // 50 is vertical center
+                spo2: new Array(100).fill(50)
+            };
+            let waveIndex = 0;
+            let currentHrSpeed = vitalsConfig.critical.hr.speed;
+
+            // QRS Complex (heartbeat "blip")
+            const qrsComplex = [50, 48, 45, 40, 30, 20, 10, 30, 90, 30, 45, 50, 50];
+            // SpO2 (pleth) wave
+            const spo2Wave = [50, 55, 60, 65, 70, 72, 70, 65, 60, 55, 50, 48, 45, 43, 45, 48];
+            
+            let qrsCounter = 0;
+            let spo2Counter = 0;
+
+            function animateWaveforms() {
+                waveIndex = (waveIndex + 1) % waveData.hr.length;
+                
+                // --- Generate HR Wave ---
+                let hrPoint = 50 + (Math.random() - 0.5) * 3; // Baseline noise
+                let beatInterval = isCritical ? 30 : 70;
+                
+                if (qrsCounter > beatInterval) {
+                    qrsCounter = 0;
+                }
+                if (qrsCounter < qrsComplex.length) {
+                    hrPoint = qrsComplex[qrsCounter];
+                }
+                qrsCounter++;
+                waveData.hr[waveIndex] = hrPoint;
+
+                // --- Generate SpO2 Wave ---
+                let spo2Point = 50 + (Math.random() - 0.5) * 2;
+                if (spo2Counter < spo2Wave.length) {
+                    spo2Point = spo2Wave[spo2Counter];
+                }
+                spo2Counter = (spo2Counter + 1) % 40; // Slower wave
+                waveData.spo2[waveIndex] = spo2Point;
+
+                // --- Draw Waves ---
+                drawWave(contexts.hr, elements.hr.canvas, waveData.hr, isCritical ? vitalsConfig.critical.hr.color : vitalsConfig.normal.hr.color);
+                drawWave(contexts.spo2, elements.spo2.canvas, waveData.spo2, isCritical ? vitalsConfig.critical.spo2.color : vitalsConfig.normal.spo2.color);
+
+                requestAnimationFrame(animateWaveforms);
+            }
+
+            function drawWave(ctx, canvas, data, color) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 3;
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = color;
+                
+                ctx.beginPath();
+                const sliceWidth = canvas.width / data.length;
+                
+                // Start from the current index
+                ctx.moveTo(0, data[waveIndex]);
+                
+                for (let i = 1; i < data.length; i++) {
+                    const dataIndex = (waveIndex + i) % data.length;
+                    ctx.lineTo(i * sliceWidth, data[dataIndex]);
+                }
+                ctx.stroke();
+                ctx.shadowBlur = 0; // Reset shadow
+            }
+
+            // --- Value Animation ---
+            function animateValue(el, start, end, duration, isFloat = false) {
+                let startTime = null;
+                const step = (timestamp) => {
+                    if (!startTime) startTime = timestamp;
+                    const progress = Math.min((timestamp - startTime) / duration, 1);
+                    const easing = progress * (2 - progress); // Ease-out quad
+                    let currentValue = easing * (end - start) + start;
+                    
+                    if (isFloat) {
+                        el.textContent = currentValue.toFixed(1);
+                    } else {
+                        el.textContent = Math.floor(currentValue);
+                    }
+                    
+                    if (progress < 1) {
+                        requestAnimationFrame(step);
+                    }
+                };
+                requestAnimationFrame(step);
+            }
+
+            // --- State Change Logic ---
+            function setMonitorState(toCritical) {
+                isCritical = toCritical;
+                const targetState = toCritical ? 'critical' : 'normal';
+                const config = vitalsConfig[targetState];
+
+                // Update Button and Alarm
+                if (toCritical) {
+                    elements.stabilizeBtn.textContent = 'Click to Stabilize Patient';
+                    elements.stabilizeBtn.classList.remove('bg-green-600', 'hover:bg-green-700');
+                    elements.stabilizeBtn.classList.add('bg-blue-600', 'hover:bg-blue-700');
+                    elements.mainAlarm.style.display = 'flex';
+                    normalLoop.stop();
+                    alarmLoop.start(0);
+                } else {
+                    elements.stabilizeBtn.textContent = 'Trigger Critical Alarm';
+                    elements.stabilizeBtn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+                    elements.stabilizeBtn.classList.add('bg-green-600', 'hover:bg-green-700');
+                    elements.mainAlarm.style.display = 'none';
+                    alarmLoop.stop();
+                    normalLoop.start(0);
+                }
+                
+                // Helper to update colors
+                const updateColors = (el, color) => {
+                    el.style.color = color;
+                    // Find the Tailwind class to remove (this is a bit of a hack)
+                    const colorClasses = ['text-red-500', 'text-yellow-400', 'text-green-500', 'text-blue-400', 'text-fuchsia-400', 'text-f9fafb'];
+                    el.classList.remove(...colorClasses);
+                    // We set inline style for animation, but add a class for good measure if needed
+                    // For this demo, inline style is fine.
+                };
+
+                // Animate Vitals
+                animateValue(elements.hr.value, parseFloat(elements.hr.value.textContent), config.hr.value, 1500);
+                animateValue(elements.spo2.value, parseFloat(elements.spo2.value.textContent), config.spo2.value, 1500);
+                animateValue(elements.nibp.sys, parseFloat(elements.nibp.sys.textContent), config.nibp.sys, 1500);
+                animateValue(elements.nibp.dias, parseFloat(elements.nibp.dias.textContent), config.nibp.dias, 1500);
+                animateValue(elements.resp.value, parseFloat(elements.resp.value.textContent), config.resp.value, 1500);
+                animateValue(elements.temp.value, parseFloat(elements.temp.value.textContent), config.temp.value, 1500, true);
+
+                // Update States and Colors
+                elements.hr.box.dataset.state = config.hr.state;
+                updateColors(elements.hr.value, config.hr.color);
+                updateColors(elements.hr.label, config.hr.color);
+                currentHrSpeed = config.hr.speed;
+
+                elements.spo2.box.dataset.state = config.spo2.state;
+                updateColors(elements.spo2.value, config.spo2.color);
+                updateColors(elements.spo2.label, config.spo2.color);
+
+                elements.nibp.box.dataset.state = config.nibp.state;
+                updateColors(elements.nibp.sys, config.nibp.color);
+                updateColors(elements.nibp.dias, config.nibp.color);
+                updateColors(elements.nibp.label, config.nibp.color);
+
+                elements.resp.box.dataset.state = config.resp.state;
+                updateColors(elements.resp.value, config.resp.color);
+                updateColors(elements.resp.label, config.resp.color);
+                
+                elements.temp.box.dataset.state = config.temp.state;
+                updateColors(elements.temp.value, config.temp.color);
+                updateColors(elements.temp.label, config.temp.color);
+            }
+
+            // --- Button Click Handler ---
+            elements.stabilizeBtn.addEventListener('click', async () => {
+                // Audio context must be started by user interaction
+                if (!audioStarted) {
+                    await Tone.start();
+                    console.log('Audio Context Started');
+                    audioStarted = true;
+                }
+                
+                setMonitorState(!isCritical);
+            });
+
+            // --- Initial State ---
+            setMonitorState(true); // Start in critical state
+            animateWaveforms(); // Start the waveform animations
+        });
+    </script>
+</body>
+</html>

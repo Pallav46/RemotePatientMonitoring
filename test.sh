@@ -55,7 +55,7 @@ api_call() {
 
 echo -e "${CYAN}"
 echo "╔═══════════════════════════════════════════════════════════════════════╗"
-echo "║         REMOTE PATIENT MONITORING - AUTOMATED TEST SUITE             ║"
+echo "║         REMOTE PATIENT MONITORING - AUTOMATED TEST SUITE              ║"
 echo "╚═══════════════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
